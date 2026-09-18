@@ -1,5 +1,5 @@
 ---
-# Run from the repo root: cd eck-map && ansible-playbook site.yml
+# Run from this directory: cd eck-map-playbook && ansible-playbook site.yml
 # (ansible.cfg is only auto-loaded from the current working directory.)
 #
 # Prerequisites this role assumes and does NOT manage:
