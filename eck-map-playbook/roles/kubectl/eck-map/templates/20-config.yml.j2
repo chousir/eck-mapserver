@@ -1,0 +1,34 @@
+# {{ ansible_managed }}
+# tileserver-gl v5.6.0 only auto-detects its built-in style when the
+# mbtiles metadata "name" field contains "openmaptiles"; OpenFreeMap's is
+# "OpenFreeMap", so an explicit config.json is required (doc §2) — without
+# it tileserver-gl silently falls back to "Serving raw data only" and
+# /styles.json returns an empty array.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ eck_map_configmap_tileserver_name }}
+  namespace: {{ eck_map_namespace }}
+  labels:
+{{ (eck_map_labels | to_nice_yaml(indent=2) | indent(4, first=True)).rstrip('\n') }}
+data:
+  config.json: |
+    {
+      "options": {
+        "paths": {
+          "root": "/usr/src/app/node_modules/tileserver-gl-styles",
+          "fonts": "fonts",
+          "styles": "styles",
+          "mbtiles": "/data"
+        }
+      },
+      "styles": {
+        "basic-preview": {
+          "style": "basic-preview/style.json",
+          "tilejson": { "bounds": [-180, -85.05113, 180, 85.05113] }
+        }
+      },
+      "data": {
+        "v3": { "mbtiles": "{{ eck_map_mbtiles_filename }}" }
+      }
+    }

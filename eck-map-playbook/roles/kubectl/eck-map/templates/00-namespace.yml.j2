@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ eck_map_namespace }}
+  labels:
+{{ (eck_map_labels | to_nice_yaml(indent=2) | indent(4, first=True)).rstrip('\n') }}

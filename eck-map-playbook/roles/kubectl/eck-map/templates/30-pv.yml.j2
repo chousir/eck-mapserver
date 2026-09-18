@@ -1,0 +1,43 @@
+# {{ ansible_managed }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ eck_map_pv_name }}
+  labels:
+{{ (eck_map_labels | to_nice_yaml(indent=2) | indent(4, first=True)).rstrip('\n') }}
+spec:
+  capacity:
+    storage: {{ eck_map_pv_storage_size }}
+  accessModes:
+    - "{{ eck_map_pv_access_mode }}"
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  local:
+    # Directory containing tiles.mbtiles (derived from eck_map_mbtiles_path)
+    # — the whole directory is mounted read-only into the container, so it
+    # should contain nothing else sensitive.
+    path: {{ eck_map_mbtiles_dir }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - "{{ eck_map_k8s_node_hostname }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ eck_map_pvc_name }}
+  namespace: {{ eck_map_namespace }}
+  labels:
+{{ (eck_map_labels | to_nice_yaml(indent=2) | indent(4, first=True)).rstrip('\n') }}
+spec:
+  accessModes:
+    - "{{ eck_map_pv_access_mode }}"
+  storageClassName: ""
+  volumeName: {{ eck_map_pv_name }}
+  resources:
+    requests:
+      storage: {{ eck_map_pv_storage_size }}

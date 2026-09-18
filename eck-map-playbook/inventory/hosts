@@ -1,0 +1,7 @@
+[k8s_controller]
+# Add ansible_host=<address> and ansible_user=<ssh-user> here if the
+# SSH-reachable address/login differs from the literal hostname below.
+# This same name is also used (by default) as the k8s node's
+# kubernetes.io/hostname label value for nodeSelector/nodeAffinity —
+# override eck_map_k8s_node_hostname in group_vars if that ever diverges.
+k8s-controller01

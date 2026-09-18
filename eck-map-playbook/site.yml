@@ -1,0 +1,31 @@
+---
+# Run from the repo root: cd eck-map && ansible-playbook site.yml
+# (ansible.cfg is only auto-loaded from the current working directory.)
+#
+# Prerequisites this role assumes and does NOT manage:
+#   - k8s-controller01 already has `kubectl` in PATH and a working kubeconfig
+#     for the SSH-connecting user.
+#   - cert-manager is already installed in the cluster.
+#   - The two images (tileserver-gl v5.6.0, nginx 1.27-alpine) have already
+#     been docker pull/tag/pushed to eck_map_image_registry by the user —
+#     this role never builds, loads, tags, or pushes images.
+#   - tiles.mbtiles is already placed at eck_map_mbtiles_path on
+#     k8s-controller01 by the user — this role never transfers it.
+#
+# Usage:
+#   ansible-playbook site.yml                  # preflight + apply + verify
+#   ansible-playbook site.yml --tags preflight  # sanity checks only, no cluster changes
+#   ansible-playbook site.yml --tags apply      # skip the post-deploy smoke checks
+#   ansible-playbook site.yml --tags verify     # re-run smoke checks only
+#
+# Note: `ansible-playbook --check` has no effect on the raw `command`-based
+# kubectl apply tasks in this role (deliberately not using the
+# kubernetes.core collection). For a dry-run, apply manifests manually with:
+#   kubectl apply -f <rendered-manifest-dir> --dry-run=server
+
+- name: Deploy ECK offline basemap (tileserver-gl + nginx TLS sidecar)
+  hosts: k8s_controller
+  gather_facts: true   # needed for ansible_env.HOME (default mbtiles path + remote manifest dir)
+  become: false
+  roles:
+    - kubectl/eck-map
