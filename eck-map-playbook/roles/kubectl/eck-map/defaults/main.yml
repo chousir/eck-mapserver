@@ -1,78 +1,37 @@
 ---
-# ── Namespace / naming ───────────────────────────────────────────
-eck_map_namespace: gis
-eck_map_app_label_value: tileserver        # Deployment/Service selector + Pod label;
-                                            # also what `kubectl logs -l app=...` filters on
-eck_map_deployment_name: tileserver
-eck_map_service_name: tileserver
-eck_map_configmap_tileserver_name: tileserver-config
-eck_map_configmap_nginx_name: tileserver-nginx-config
-eck_map_pv_name: tileserver-data
-eck_map_pvc_name: tileserver-data
-eck_map_selfsigned_issuer_name: tileserver-selfsigned
-eck_map_certificate_name: tileserver-tls
-eck_map_certificate_secret_name: tileserver-tls
+# Environment is fixed (kubespray v2.31.0 cluster: kubectl + /root/.kube/config
+# on the control plane, MetalLB, cert-manager with the `ca-issuer`
+# ClusterIssuer). Only values that can actually differ are variables.
 
-eck_map_labels:                            # bookkeeping labels on resource metadata —
-  app.kubernetes.io/name: tileserver       # NOT the selector (that's eck_map_app_label_value)
-  app.kubernetes.io/part-of: eck-map
-  app.kubernetes.io/managed-by: ansible
+eck_map_namespace: gis
+eck_map_manifest_dir: /etc/k8s/eck-map      # rendered manifests on the target host
 
 # ── tiles.mbtiles (placed by the user; this role never transfers it) ─────
-eck_map_mbtiles_path: "{{ ansible_env.HOME }}/openfreemap/tiles.mbtiles"
-eck_map_mbtiles_dir: "{{ eck_map_mbtiles_path | dirname }}"       # -> PV local.path
-eck_map_mbtiles_filename: "{{ eck_map_mbtiles_path | basename }}" # -> config.json data.v3.mbtiles
-eck_map_mbtiles_sha256: ""                 # empty = skip checksum, only stat+perms are checked
+eck_map_mbtiles_path: /var/lib/tileserver/tiles.mbtiles
+eck_map_mbtiles_sha256: ""                  # set once to verify the ~95GB file (slow)
+eck_map_pv_storage_size: 150Gi              # ≥1.2x the actual file size
 
-# ── PV / PVC ──────────────────────────────────────────────────────
-eck_map_pv_storage_size: "150Gi"
-eck_map_pv_access_mode: ReadOnlyMany
+# ── Images ────────────────────────────────────────────────────────────────
+# Empty = original names, pulled through containerd's registry mirror
+# (Nexus). Set only if images live under another prefix.
+eck_map_image_registry: ""
+eck_map_image_prefix: "{{ eck_map_image_registry ~ '/' if eck_map_image_registry else '' }}"
+eck_map_tileserver_image: "{{ eck_map_image_prefix }}maptiler/tileserver-gl:v5.6.0"
+eck_map_nginx_image: "{{ eck_map_image_prefix }}nginx:1.30-alpine"
 
-# ── Images (air-gapped internal registry; user pulls/tags/pushes these
-#    themselves — this role only ever references the resulting name) ─────
-eck_map_image_registry: "registry.internal:5000"
-eck_map_tileserver_image_repository: "maptiler/tileserver-gl"
-eck_map_tileserver_image_tag: "v5.6.0"
-eck_map_nginx_image_repository: "nginx"
-eck_map_nginx_image_tag: "1.27-alpine"
-eck_map_image_pull_policy: IfNotPresent
-eck_map_tileserver_image: "{{ eck_map_image_registry }}/{{ eck_map_tileserver_image_repository }}:{{ eck_map_tileserver_image_tag }}"
-eck_map_nginx_image: "{{ eck_map_image_registry }}/{{ eck_map_nginx_image_repository }}:{{ eck_map_nginx_image_tag }}"
+# ── TLS ───────────────────────────────────────────────────────────────────
+eck_map_cert_issuer_name: ca-issuer         # CA-type ClusterIssuer
+eck_map_cert_duration: 8760h                # cannot outlive the issuing CA
+# ca.crt is copied here on the Ansible control node after deploy.
+eck_map_ca_export_path: "{{ playbook_dir }}/tileserver-ca.crt"
 
-# ── TLS / cert-manager (cert-manager itself is a prerequisite, not
-#    installed by this role) ────────────────────────────────────────────
-eck_map_cert_manager_create_selfsigned_issuer: true
-eck_map_cert_issuer_name: "{{ eck_map_selfsigned_issuer_name }}"
-eck_map_cert_issuer_kind: Issuer            # Issuer | ClusterIssuer
-eck_map_tile_vip: ""                        # REQUIRED — asserted non-empty + IPv4-shaped in preflight
-eck_map_cert_wait_timeout: "120s"
+# ── Service IP ────────────────────────────────────────────────────────────
+# Empty = MetalLB auto-assigns; set to pin a specific IP from the pool.
+eck_map_tile_vip: ""
 
-# ── Ports (shared by the nginx.conf ConfigMap and the Deployment) ────────
-eck_map_tileserver_port: 8080
-eck_map_nginx_listen_port: 8443
-
-# ── Deployment / Service ─────────────────────────────────────────────────
-eck_map_replicas: 1
-# Value of the k8s node's kubernetes.io/hostname label (nodeSelector/
-# nodeAffinity target) — separate from the SSH inventory alias in case they
-# ever diverge; defaults to the same string.
+# ── Pod ───────────────────────────────────────────────────────────────────
+# kubernetes.io/hostname of the node holding tiles.mbtiles.
 eck_map_k8s_node_hostname: "{{ inventory_hostname }}"
-eck_map_tolerations:
-  - key: node-role.kubernetes.io/control-plane
-    effect: NoSchedule
-eck_map_tileserver_requests_memory: 1Gi
-eck_map_tileserver_requests_cpu: 500m
-eck_map_tileserver_limits_memory: 2Gi
-eck_map_service_type: LoadBalancer
-eck_map_service_port: 443
-
-# ── kubectl / remote execution ───────────────────────────────────────────
-eck_map_kubectl_bin: kubectl
-eck_map_kubectl_context: ""                 # optional; absolute values only, argv has no shell expansion
-eck_map_kubectl_kubeconfig: ""              # optional; use an absolute path, "~" is NOT expanded
-eck_map_remote_manifest_dir: "{{ ansible_env.HOME }}/.eck-map/manifests"
-
-# ── Verification ──────────────────────────────────────────────────────────
-eck_map_rollout_status_timeout: "180s"
-eck_map_lb_ip_retries: 12
-eck_map_lb_ip_delay: 5
+eck_map_tileserver_resources:
+  requests: { memory: 1Gi, cpu: 500m }
+  limits: { memory: 2Gi }

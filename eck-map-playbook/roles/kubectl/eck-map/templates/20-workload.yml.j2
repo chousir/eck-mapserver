@@ -1,0 +1,117 @@
+# {{ ansible_managed }}
+# Storage (local PV on the node holding tiles.mbtiles) + the Deployment.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: tileserver-data
+  labels:
+    app.kubernetes.io/part-of: eck-map
+spec:
+  capacity:
+    storage: {{ eck_map_pv_storage_size }}
+  accessModes: ["ReadOnlyMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  local:
+    # The whole directory is mounted read-only into the container, so it
+    # should contain nothing else.
+    path: {{ eck_map_mbtiles_path | dirname }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["{{ eck_map_k8s_node_hostname }}"]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tileserver-data
+  namespace: {{ eck_map_namespace }}
+  labels:
+    app.kubernetes.io/part-of: eck-map
+spec:
+  accessModes: ["ReadOnlyMany"]
+  storageClassName: ""
+  volumeName: tileserver-data
+  resources:
+    requests:
+      storage: {{ eck_map_pv_storage_size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tileserver
+  namespace: {{ eck_map_namespace }}
+  labels:
+    app.kubernetes.io/part-of: eck-map
+spec:
+  replicas: 1          # pinned to one node by the local PV; more replicas add no HA
+  selector:
+    matchLabels:
+      app: tileserver
+  template:
+    metadata:
+      labels:
+        app: tileserver
+      annotations:
+        # Changes whenever 10-config.yml changes (config or cert IP), so the
+        # Pod is rolled automatically — ConfigMap updates alone don't restart it.
+        eck-map/config-hash: "{{ lookup('ansible.builtin.template', '10-config.yml.j2') | hash('sha256') }}"
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      nodeSelector:
+        kubernetes.io/hostname: {{ eck_map_k8s_node_hostname }}
+      containers:
+        - name: tileserver
+          image: {{ eck_map_tileserver_image }}
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/etc/tileserver-config/config.json", "--port", "8080"]
+          ports:
+            - containerPort: 8080
+          readinessProbe:                 # 200 only once tileserver-gl has loaded its sources
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 5
+          resources:
+{{ eck_map_tileserver_resources | to_nice_yaml(indent=2) | indent(12, first=True) | trim('\n') }}
+          volumeMounts:
+            - { name: mapdata, mountPath: /data, readOnly: true }
+            - { name: tsconfig, mountPath: /etc/tileserver-config, readOnly: true }
+        - name: nginx-tls
+          image: {{ eck_map_nginx_image }}
+          imagePullPolicy: IfNotPresent
+          # nginx doesn't notice when cert-manager renews the mounted Secret,
+          # so reload it every 6h. If nginx itself exits, the loop ends and
+          # the container restarts.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              nginx -g 'daemon off;' &
+              pid=$!
+              trap 'nginx -s quit; wait "$pid"; exit 0' TERM INT
+              while kill -0 "$pid" 2>/dev/null; do
+                sleep 21600 & wait $!
+                nginx -s reload
+              done
+              wait "$pid"
+          ports:
+            - containerPort: 8443
+          readinessProbe:
+            tcpSocket: { port: 8443 }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: nginx-config, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+            - { name: tls-cert, mountPath: /etc/nginx-tls, readOnly: true }
+      volumes:
+        - name: mapdata
+          persistentVolumeClaim: { claimName: tileserver-data, readOnly: true }
+        - name: tsconfig
+          configMap: { name: tileserver-config }
+        - name: nginx-config
+          configMap: { name: tileserver-nginx-config }
+        - name: tls-cert
+          secret: { secretName: tileserver-tls }

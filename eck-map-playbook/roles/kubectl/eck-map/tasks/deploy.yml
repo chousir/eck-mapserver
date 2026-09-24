@@ -1,0 +1,57 @@
+---
+# Order: Namespace+Service first (to get the MetalLB IP), then the
+# Certificate for that IP + ConfigMaps, then PV/PVC + Deployment once the
+# cert Secret exists.
+- name: Ensure manifest directory exists
+  ansible.builtin.file:
+    path: "{{ eck_map_manifest_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Render 00-service.yml
+  ansible.builtin.template:
+    src: 00-service.yml.j2
+    dest: "{{ eck_map_manifest_dir }}/00-service.yml"
+    mode: "0600"
+
+- name: Apply 00-service.yml (Namespace + Service)
+  ansible.builtin.command: kubectl apply -f {{ eck_map_manifest_dir }}/00-service.yml
+  register: eck_map_apply
+  changed_when: eck_map_apply.stdout is search('created|configured')
+
+- name: Wait for MetalLB to assign the Service an IP
+  ansible.builtin.command: >-
+    kubectl -n {{ eck_map_namespace }} get svc tileserver
+    -o jsonpath={.status.loadBalancer.ingress[0].ip}
+  register: eck_map_svc_ip
+  changed_when: false
+  until: eck_map_svc_ip.stdout | length > 0
+  retries: 12
+  delay: 5
+
+- name: Record the tile IP
+  ansible.builtin.set_fact:
+    eck_map_tile_ip: "{{ eck_map_svc_ip.stdout }}"
+
+- name: Render 10-config.yml and 20-workload.yml (need the tile IP)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ eck_map_manifest_dir }}/{{ item }}"
+    mode: "0600"
+  loop: [10-config.yml, 20-workload.yml]
+
+- name: Apply 10-config.yml (Certificate + ConfigMaps)
+  ansible.builtin.command: kubectl apply -f {{ eck_map_manifest_dir }}/10-config.yml
+  register: eck_map_apply
+  changed_when: eck_map_apply.stdout is search('created|configured')
+
+- name: Wait for the Certificate to be issued by {{ eck_map_cert_issuer_name }}
+  ansible.builtin.command: >-
+    kubectl -n {{ eck_map_namespace }} wait --for=condition=Ready
+    certificate/tileserver-tls --timeout=120s
+  changed_when: false
+
+- name: Apply 20-workload.yml (PV/PVC + Deployment)
+  ansible.builtin.command: kubectl apply -f {{ eck_map_manifest_dir }}/20-workload.yml
+  register: eck_map_apply
+  changed_when: eck_map_apply.stdout is search('created|configured')

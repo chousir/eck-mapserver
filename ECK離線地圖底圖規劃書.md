@@ -37,32 +37,17 @@ curl -s "https://btrfs.openfreemap.com/areas/planet/<版本>/SHA256SUMS"    # �
 | 授權 | MIT(程式碼)+ OSM ODbL(資料,須標示 © OpenStreetMap contributors) |
 
 > 每週更新一次,若要用更新版本,以上面指令查最新版取代路徑,並改用該版本自己的 `SHA256SUMS`。
-> **換版本時,`tileserver/openfreemap/download_loop.sh` 內寫死的三個常數 `URL`/`EXPECTED`(bytes 數)/結尾 `sha256sum -c -` 用的 hash 要一起換**,只改 `URL` 的話,下載會卡在錯的 `EXPECTED` 判斷式裡,或跑出誤導性的 checksum 失敗。腳本內 `cd` 用的也是寫死的絕對路徑(`/home/user/elastic-stack/tileserver/openfreemap`),換機器部署時這行也要對應調整。
 
 ### 1.2 下載(可續傳、自動重試)
 
-95GB 等級的下載,**不要用單純一行 `curl`**——長連線搭配 curl 內建 `--retry` 在 HTTP/2 上重試時,實測會發生 resume 位置與磁碟不同步、把已下載內容覆寫掉的問題(曾一次损失 15GB+ 進度)。改用 `tileserver/openfreemap/download_loop.sh`,重試交給外層迴圈處理,強制 HTTP/1.1、每 30 分鐘乾淨重啟一次連線。
+95GB 等級的下載,**不要用單純一行 `curl`**——長連線搭配 curl 內建 `--retry` 在 HTTP/2 上重試時,實測會發生 resume 位置與磁碟不同步、把已下載內容覆寫掉的問題(曾一次损失 15GB+ 進度)。原則:**強制 HTTP/1.1、以磁碟上實際大小續傳(`-C -`)、重試交給外層迴圈而不是 curl 的 `--retry`**,例如:
 
-執行:
 ```bash
-mkdir -p tileserver/openfreemap
-cd tileserver/openfreemap
-chmod +x download_loop.sh
-nohup ./download_loop.sh >> download_loop.log 2>&1 &
-disown
+URL=https://btrfs.openfreemap.com/areas/planet/20260810_211301_pt/tiles.mbtiles
+until curl --http1.1 -fL -C - -o tiles.mbtiles "$URL"; do sleep 30; done
 ```
 
-**查進度**:`stat -c%s tileserver/openfreemap/tiles.mbtiles`(目標:101859651584)
-
-**暫停**(不遺失進度):
-```bash
-pkill -TERM -f download_loop.sh
-pkill -TERM -f "curl.*tiles.mbtiles"
-```
-
-**繼續**:重新執行同一支 `nohup ./download_loop.sh ...` 即可,自動從磁碟現有大小續傳。
-
-**若看到 `WARNING: 檔案變小了`**:代表又發生 resume 覆寫,立即暫停,重新執行腳本(會自動以磁碟實際大小續傳,不需手動改檔)。
+**查進度**:`stat -c%s tiles.mbtiles`(目標:101859651584)。中斷後重新執行同一行即可從磁碟現有大小續傳;下載完一定要跑 §1.3 的 SHA256 驗證。
 
 ### 1.3 下載完成後驗證
 
@@ -93,7 +78,7 @@ WARN: MBTiles not in "openmaptiles" format. Serving raw data only...
 
 **修法**:給明確的 `config.json`,直接宣告 data source 與樣式,跳過自動偵測。
 
-`tileserver/config.json`:
+`config.json`:
 ```json
 {
   "options": {
@@ -124,8 +109,8 @@ WARN: MBTiles not in "openmaptiles" format. Serving raw data only...
 
 ```bash
 docker pull --platform linux/amd64 maptiler/tileserver-gl:v5.6.0
-docker save maptiler/tileserver-gl:v5.6.0 -o tileserver/images/tileserver-gl_v5.6.0_amd64.tar
-sha256sum tileserver/images/tileserver-gl_v5.6.0_amd64.tar > tileserver/images/tileserver-gl_v5.6.0_amd64.tar.sha256
+docker save maptiler/tileserver-gl:v5.6.0 -o images/tileserver-gl_v5.6.0_amd64.tar
+sha256sum images/tileserver-gl_v5.6.0_amd64.tar > images/tileserver-gl_v5.6.0_amd64.tar.sha256
 ```
 
 **已備妥(已執行並驗證)**:
@@ -139,9 +124,9 @@ sha256sum tileserver/images/tileserver-gl_v5.6.0_amd64.tar > tileserver/images/t
 **§4.3c 需要一個 nginx sidecar 幫 tileserver 終止 TLS**(見該節),這個映像也要一起打包,不能漏——一樣釘死明確版本號,不要用 `:latest`:
 
 ```bash
-docker pull --platform linux/amd64 nginx:1.27-alpine
-docker save nginx:1.27-alpine -o tileserver/images/nginx_1.27-alpine_amd64.tar
-sha256sum tileserver/images/nginx_1.27-alpine_amd64.tar > tileserver/images/nginx_1.27-alpine_amd64.tar.sha256
+docker pull --platform linux/amd64 nginx:1.30-alpine
+docker save nginx:1.30-alpine -o images/nginx_1.30-alpine_amd64.tar
+sha256sum images/nginx_1.30-alpine_amd64.tar > images/nginx_1.30-alpine_amd64.tar.sha256
 ```
 
 **搬進 air-gapped 需要的檔案**:
@@ -151,7 +136,7 @@ sha256sum tileserver/images/nginx_1.27-alpine_amd64.tar > tileserver/images/ngin
 | `openfreemap/tiles.mbtiles`(~95GB)+ `.sha256` | tileserver 資料 |
 | `config.json` | tileserver-gl 樣式設定(§2,必要) |
 | `images/tileserver-gl_v5.6.0_amd64.tar` + `.sha256` | 服務容器 |
-| `images/nginx_1.27-alpine_amd64.tar` + `.sha256` | TLS sidecar(§4.3c,必要——沒有它 §4.5 的 https 底圖連不上) |
+| `images/nginx_1.30-alpine_amd64.tar` + `.sha256` | TLS sidecar(§4.3c,必要——沒有它 §4.5 的 https 底圖連不上) |
 
 依主文件《ECK部署規劃書.md》§3.3 方式之一保全:推入內部 registry,或用實體介質匯入(§4.1)——**兩個映像都要處理**,不是只有 tileserver-gl。
 
@@ -169,9 +154,9 @@ docker load -i tileserver-gl_v5.6.0_amd64.tar
 docker tag maptiler/tileserver-gl:v5.6.0 registry.internal:5000/maptiler/tileserver-gl:v5.6.0
 docker push registry.internal:5000/maptiler/tileserver-gl:v5.6.0
 
-docker load -i nginx_1.27-alpine_amd64.tar
-docker tag nginx:1.27-alpine registry.internal:5000/nginx:1.27-alpine
-docker push registry.internal:5000/nginx:1.27-alpine
+docker load -i nginx_1.30-alpine_amd64.tar
+docker tag nginx:1.30-alpine registry.internal:5000/nginx:1.30-alpine
+docker push registry.internal:5000/nginx:1.30-alpine
 
 # 方式 B:直接把 tar 匯入節點的 containerd(過渡用)。
 # 注意:crictl 沒有 load 子命令——containerd 原生匯入本地 tar 要用 ctr,不是 crictl
@@ -179,7 +164,7 @@ docker push registry.internal:5000/nginx:1.27-alpine
 #  這裡是匯入本機已存在的 tar,兩者不能混用)。實際節點上執行前建議先跑一次
 # `ctr -n k8s.io images import --help` 確認語法,這條指令目前文件裡沒有實測紀錄。
 ctr -n k8s.io images import tileserver-gl_v5.6.0_amd64.tar
-ctr -n k8s.io images import nginx_1.27-alpine_amd64.tar
+ctr -n k8s.io images import nginx_1.30-alpine_amd64.tar
 ```
 
 ### 4.2 mbtiles 放置到 controller
@@ -276,7 +261,7 @@ data:
 
 **修法**:在同一個 Pod 裡加一個 `nginx` sidecar 終止 TLS、反向代理到 `tileserver` container 的 `localhost:8080`,Service 對外只開 443。
 
-**待確認(部署前必須先解決,不是可以晚點補的優化項)**:cert-manager 要用哪個 `ClusterIssuer`/`Issuer`。**首選是沿用簽 ES/Kibana 憑證用的那個內部 CA `ClusterIssuer`**——好處是瀏覽器/OS 只要匯入這條內部 CA 一次,之後這條 CA 簽的所有服務憑證(ES、Kibana、tileserver…)都自動被信任,而且如果 ES/Kibana 的憑證信任鏈已經在使用者端建立好了,tileserver 直接沿用就不用再處理一次。部署前跟叢集管理者要到這個 issuer 的實際名稱,填進下面的 `issuerRef`。
+**待確認(部署前必須先解決,不是可以晚點補的優化項)**:cert-manager 要用哪個 `ClusterIssuer`/`Issuer`。**必須是 CA 型(`spec.ca`)的 `ClusterIssuer`,並建議 Kibana 的 HTTP 憑證也改由同一個 CA 簽發**(ECK 預設是各自產生自簽 CA,不經過 cert-manager;作法見 README「TLS 與瀏覽器信任」)——好處是瀏覽器/OS 只要匯入這條內部 CA 一次,之後這條 CA 簽的所有服務憑證(ES、Kibana、tileserver…)都自動被信任,而且如果 ES/Kibana 的憑證信任鏈已經在使用者端建立好了,tileserver 直接沿用就不用再處理一次。部署前跟叢集管理者要到這個 issuer 的實際名稱,填進下面的 `issuerRef`。
 
 下面範例的 `SelfSigned` Issuer **只能拿來測連通性,不能當正式部署的預設值**——`SelfSigned` 簽出來的是「自己簽自己」的單張 leaf 憑證,不是一條可重複使用的 CA:瀏覽器/Kibana 載入底圖圖磚是 subresource 請求,對不受信任的憑證**不會跳出可點擊「繼續前往」的警告,會直接靜默失敗**——效果跟沒修 mixed content 之前一樣,底圖一樣整片消失、看起來像沒改到。而且 §6.5 加的「內部 CA 已匯入使用者瀏覽器信任庫」這項檢查,`SelfSigned` 這條路徑本來就沒有 CA 可以匯入,永遠過不了。真的要用 `SelfSigned` 過渡,務必先在 §5.2(本機重現)確認瀏覽器信任問題怎麼處理,再套用到正式環境。
 
@@ -383,7 +368,7 @@ spec:
               mountPath: /etc/tileserver-config
               readOnly: true
         - name: nginx-tls                              # §4.3c:終止 TLS,反代到上面的 tileserver:8080
-          image: registry.internal:5000/nginx:1.27-alpine
+          image: registry.internal:5000/nginx:1.30-alpine
           ports:
             - containerPort: 8443
           volumeMounts:
@@ -464,19 +449,18 @@ helm upgrade prod elastic/eck-stack -n elastic-stack --version 0.19.1 -f eck-sta
 
 用 ES 9.4.2 + Kibana 9.4.2 + tileserver-gl v5.6.0 在本機跑一輪,不用碰到 k8s 就能抓出設定問題(§2 的 config.json 問題就是這樣抓出來的)。三個映像都建議先備好本機快取,起這個 compose 就不需要連網。
 
-`tileserver/docker-compose.local-test.yml` + `tileserver/kibana.local-test.yml` + `tileserver/config.json`(已備妥,見檔案本身的行內註解)。
+需自備一份 compose:`elasticsearch`、`kibana`(9.4.2)、`tileserver`(v5.6.0,掛 §2 的 `config.json` 與 `tiles.mbtiles`,對外 8080),Kibana 設定 `map.tilemap.url: "http://localhost:8080/styles/basic-preview/{z}/{x}/{y}.png"` 與 `map.includeElasticMapsService: false`。以下指令假設服務名稱就是這三個。
 
 Kibana 連線帳號用 `kibana_system`(9.4.2 起直接拒絕 `elastic` 這個 superuser 連線,啟動即 FATAL,已實測驗證)。它的密碼是 ES 起來後才存在的一次性資料,起 compose 前還沒有,所以**先只起 ES 跟 tileserver**,設完密碼再起 Kibana——順序顛倒 Kibana 會直接 crash-loop:
 
 ```bash
-cd tileserver
-docker compose -f docker-compose.local-test.yml up -d elasticsearch tileserver
+docker compose up -d elasticsearch tileserver
 
 curl -u elastic:changeme-test-only -X POST \
   http://localhost:9200/_security/user/kibana_system/_password \
   -H 'Content-Type: application/json' -d '{"password":"changeme-test-only"}'
 
-docker compose -f docker-compose.local-test.yml up -d kibana
+docker compose up -d kibana
 
 curl -s http://localhost:8080/styles.json                          # 應非空陣列,含 basic-preview
 curl -s -u elastic:changeme-test-only http://localhost:5601/api/status
@@ -504,7 +488,7 @@ curl -s -u elastic:changeme-test-only http://localhost:5601/api/status
 
 **測完清掉**:
 ```bash
-docker compose -f docker-compose.local-test.yml down -v
+docker compose down -v
 ```
 
 ### 5.2 本機重現 §4.3c 的 TLS sidecar(在犯錯成本低的地方先抓 nginx.conf/憑證問題)
@@ -512,8 +496,8 @@ docker compose -f docker-compose.local-test.yml down -v
 §4.3c 的 nginx sidecar、憑證、瀏覽器信任鏈完全沒有實跑過——air-gapped 正式環境是最不該第一次跑這段的地方。建議先在本機用同一份 `nginx.conf` 過一遍:
 
 1. 本機產生一張自簽憑證(`openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt -days 30 -addext "subjectAltName=IP:127.0.0.1"`——注意用 `subjectAltName=IP:...`,不是 CN/DNS,呼應 §4.3c「`<tile-VIP>` 是 IP,憑證要用 ipAddresses」的重點)。
-2. 額外起一個 `nginx:1.27-alpine` 容器,掛 §4.3c 那份 `nginx.conf`(把 `proxy_pass` 指到本機 compose 的 `tileserver:8080`)+ 上面產生的 `tls.crt`/`tls.key`,對外開 8443。
-3. 把 `kibana.local-test.yml` 的 `map.tilemap.url` 暫時改成 `https://localhost:8443/styles/basic-preview/{z}/{x}/{y}.png`,重啟 Kibana。
+2. 額外起一個 `nginx:1.30-alpine` 容器,掛 §4.3c 那份 `nginx.conf`(把 `proxy_pass` 指到本機 compose 的 `tileserver:8080`)+ 上面產生的 `tls.crt`/`tls.key`,對外開 8443。
+3. 把本機 Kibana 設定的 `map.tilemap.url` 暫時改成 `https://localhost:8443/styles/basic-preview/{z}/{x}/{y}.png`,重啟 Kibana。
 4. 瀏覽器開 Kibana Maps,確認底圖圖磚正常渲染(跟 §7.5 的截圖比對)。若瀏覽器擋憑證不信任,這裡先解掉信任問題(匯入這張測試憑證,或改用內部 CA 簽的憑證),而不是等到正式環境才發現。
 5. 驗證完把 `map.tilemap.url` 改回本機測試原本的值,或直接 `down -v` 收掉。
 
@@ -855,13 +839,11 @@ Kibana 會把它**寫進一個新的 ES 索引**(`geo_shape` 或 `geo_point`)並
 `-u elastic:changeme-test-only`、明文 http(不用 `-k`)。正式環境把連線換成 §6 的
 `https://$ESIP:9200` + `-k` + 實際密碼即可。
 
-**驗證狀態**:每個範例的建索引 / 灌資料 / ⑥ 驗證查詢、以及 §7.5.4 的 saved object
-匯入,都已在本機 ES/Kibana 9.4.2 + tileserver-gl v5.6.0 實跑通過(逐步輸出見
-`tileserver/local-test-artifacts/verify.log`);④ 的 Maps 點選步驟**已有實際瀏覽器截圖佐證**
-(`tileserver/local-test-artifacts/kibana-stacked-map.png` / `kibana-stacked-map-maponly.png`,
-四層——底圖 + `geo-test` 點位 + `zones` 責任區 + `track-lines` 軌跡——同時正確疊加顯示)。
+**驗證狀態**:每個範例的建索引 / 灌資料 / ⑥ 驗證查詢,都已在本機 ES/Kibana 9.4.2 +
+tileserver-gl v5.6.0 實跑通過;④ 的 Maps 點選步驟也已用瀏覽器確認四層——底圖 + `geo-test`
+點位 + `zones` 責任區 + `track-lines` 軌跡——同時正確疊加顯示。
 
-前置:`docker compose -f docker-compose.local-test.yml up -d`,三個容器都起來,
+前置:`docker compose up -d`,三個容器都起來,
 Kibana `GET /api/status` 的 `status.overall.level` = `available`。
 
 #### 7.5.1 Documents —— geo-test 點位
@@ -1041,29 +1023,12 @@ EOF
 - **行政區界**:要真的縣市界,把上面的多邊形換成 GADM / 政府開放資料下載的
   台灣縣市 GeoJSON(一樣 upload 或 `_bulk`),再用 **Choropleth** 圖層拿 ES 聚合值對它上色。
 
-#### 7.5.4 一鍵匯入疊好的示範 Map
-
-本機測試已把「底圖 + geo-test 點 + zones 責任區 + track-lines 軌跡」四層疊好、存成一個
-Maps saved object 匯出成 `tileserver/local-test-artifacts/stacked-map.ndjson`。在任一台
-Kibana(需先有本節的 `geo-test` / `zones` / `track-lines` 索引):
-
-```bash
-curl -s -u elastic:changeme-test-only -H 'kbn-xsrf: true' \
-  -X POST 'http://localhost:5601/api/saved_objects/_import?overwrite=true' \
-  --form file=@tileserver/local-test-artifacts/stacked-map.ndjson
-```
-
-→ Kibana → Maps → 開「[ECK 離線底圖] 疊加示範」即可看到四層疊加。
-(此 NDJSON 已通過建立 / 匯出 / 重匯入 / 圖層-reference 一致性檢查;實際畫面渲染
-也已有瀏覽器截圖佐證,見 `tileserver/local-test-artifacts/kibana-stacked-map.png` /
-`kibana-stacked-map-maponly.png`。)
-
 ### 7.6 放進 Dashboard
 
 整張 Map(含所有疊加圖層)可 Save 後,在 Dashboard 用 Add panel 加入,與其它視覺化並列;
 Dashboard 的時間範圍與 filter 會套到 Map 的 ES 圖層。三個範例圖層 + 底圖存成一張 Map 後,
 也可整批用 `POST /api/saved_objects/_export`(`type=map`、`includeReferencesDeep=true`)
-匯出 NDJSON、在另一台 Kibana `_import`(§7.5.4)。
+匯出 NDJSON、在另一台 Kibana 用 `POST /api/saved_objects/_import` 匯入。
 
 ### 7.7 目前資料的界線
 

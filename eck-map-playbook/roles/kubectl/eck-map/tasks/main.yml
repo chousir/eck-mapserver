@@ -1,12 +1,9 @@
 ---
-- name: Preflight checks (vars, kubectl reachability, cert-manager, tiles.mbtiles)
+- name: Preflight (tiles.mbtiles present and readable)
   ansible.builtin.import_tasks: preflight.yml
-  tags: [preflight, always]
 
-- name: Render manifests and kubectl apply, in required order
-  ansible.builtin.import_tasks: render_apply.yml
-  tags: [apply]
+- name: Render manifests and kubectl apply
+  ansible.builtin.import_tasks: deploy.yml
 
-- name: Post-deploy verification (read-only)
+- name: Verify, export ca.crt, print Kibana settings
   ansible.builtin.import_tasks: verify.yml
-  tags: [verify]

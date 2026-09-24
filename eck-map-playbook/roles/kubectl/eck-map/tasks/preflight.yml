@@ -1,113 +1,29 @@
 ---
-- name: Compute shared kubectl base args (context/kubeconfig overrides)
-  ansible.builtin.set_fact:
-    eck_map_kubectl_base_args: >-
-      {{ (['--context=' + eck_map_kubectl_context] if eck_map_kubectl_context else [])
-         + (['--kubeconfig=' + eck_map_kubectl_kubeconfig] if eck_map_kubectl_kubeconfig else []) }}
-
-- name: Assert required variables are set correctly
-  ansible.builtin.assert:
-    that:
-      - eck_map_tile_vip | length > 0
-      - eck_map_tile_vip is match('^(\\d{1,3}\\.){3}\\d{1,3}$')
-    fail_msg: >-
-      eck_map_tile_vip must be set to the MetalLB IP that will be assigned to
-      the tileserver Service (an IPv4 address, not a hostname — the
-      Certificate uses ipAddresses, see doc §4.3c). Set it in
-      inventory/group_vars/all.yml.
-
-- name: Assert a real cert-manager issuer is configured when not using the self-signed default
-  ansible.builtin.assert:
-    that:
-      - eck_map_cert_issuer_name != eck_map_selfsigned_issuer_name
-      - eck_map_cert_issuer_kind in ['Issuer', 'ClusterIssuer']
-    fail_msg: >-
-      eck_map_cert_manager_create_selfsigned_issuer is false, but
-      eck_map_cert_issuer_name/kind still point at the built-in self-signed
-      issuer. Set eck_map_cert_issuer_name to your internal CA
-      Issuer/ClusterIssuer name, and eck_map_cert_issuer_kind accordingly.
-  when: not eck_map_cert_manager_create_selfsigned_issuer
-
-- name: Assert PV storage size looks like a k8s quantity
-  ansible.builtin.assert:
-    that:
-      - eck_map_pv_storage_size is match('^[0-9]+[GM]i$')
-    fail_msg: "eck_map_pv_storage_size must look like e.g. 150Gi or 500Mi, got: {{ eck_map_pv_storage_size }}"
-
-- name: Check kubectl is reachable and can talk to the cluster
-  ansible.builtin.command:
-    argv: "{{ [eck_map_kubectl_bin] + eck_map_kubectl_base_args + ['get', 'ns'] }}"
-  register: eck_map_kubectl_check
-  changed_when: false
-
-- name: Check cert-manager is installed (prerequisite this role does not manage)
-  ansible.builtin.command:
-    argv: "{{ [eck_map_kubectl_bin] + eck_map_kubectl_base_args + ['get', 'crd', 'certificates.cert-manager.io'] }}"
-  register: eck_map_certmanager_check
-  changed_when: false
-  failed_when: false
-
-- name: Fail if cert-manager is not installed
-  ansible.builtin.fail:
-    msg: >-
-      cert-manager does not appear to be installed on this cluster
-      (certificates.cert-manager.io CRD not found). Install cert-manager
-      first — this role assumes it as a prerequisite and does not manage it.
-  when: eck_map_certmanager_check.rc != 0
-
-- name: Stat tiles.mbtiles on the target host
+# Only checks what this playbook can't see fail clearly on its own: the
+# user-placed tiles.mbtiles. Everything else (kubectl, cert-manager,
+# ca-issuer, MetalLB) is part of the fixed kubespray environment.
+- name: Stat tiles.mbtiles (SHA256 only when eck_map_mbtiles_sha256 is set — reads ~95GB)
   ansible.builtin.stat:
     path: "{{ eck_map_mbtiles_path }}"
-  register: eck_map_mbtiles_stat
-
-- name: Fail fast if tiles.mbtiles is missing
-  ansible.builtin.assert:
-    that:
-      - eck_map_mbtiles_stat.stat.exists
-      - eck_map_mbtiles_stat.stat.isreg
-    fail_msg: >-
-      {{ eck_map_mbtiles_path }} not found on {{ inventory_hostname }}.
-      Place tiles.mbtiles there yourself first (doc §1) — this playbook
-      does not transfer the file.
-
-- name: Fail fast if tiles.mbtiles is not world-readable
-  ansible.builtin.assert:
-    that:
-      - eck_map_mbtiles_stat.stat.roth
-    fail_msg: >-
-      {{ eck_map_mbtiles_path }} is not world-readable
-      (mode {{ eck_map_mbtiles_stat.stat.mode }}). tileserver-gl runs as a
-      non-root container user and will get EACCES. Fix:
-      chmod o+r {{ eck_map_mbtiles_path }}
+    get_checksum: "{{ eck_map_mbtiles_sha256 | length > 0 }}"
+    checksum_algorithm: sha256
+  register: eck_map_mbtiles
 
 - name: Stat the directory containing tiles.mbtiles
   ansible.builtin.stat:
-    path: "{{ eck_map_mbtiles_dir }}"
-  register: eck_map_mbtiles_dir_stat
+    path: "{{ eck_map_mbtiles_path | dirname }}"
+  register: eck_map_mbtiles_dir
 
-- name: Fail fast if the containing directory isn't world-traversable
+- name: Assert tiles.mbtiles is in place and readable by the non-root container
   ansible.builtin.assert:
     that:
-      - eck_map_mbtiles_dir_stat.stat.roth
-      - eck_map_mbtiles_dir_stat.stat.xoth
+      - eck_map_mbtiles.stat.isreg | default(false)
+      - eck_map_mbtiles.stat.roth
+      - eck_map_mbtiles_dir.stat.roth and eck_map_mbtiles_dir.stat.xoth
+      - eck_map_mbtiles_sha256 | length == 0 or eck_map_mbtiles.stat.checksum == eck_map_mbtiles_sha256 | lower
     fail_msg: >-
-      {{ eck_map_mbtiles_dir }} is not world-readable+executable
-      (mode {{ eck_map_mbtiles_dir_stat.stat.mode }}). This whole directory
-      is exposed read-only into the container as a local PV, so it should
-      contain nothing sensitive. Fix: chmod o+rx {{ eck_map_mbtiles_dir }}
-
-- name: Verify tiles.mbtiles SHA256 (slow — reads the whole ~95GB file; opt-in only)
-  ansible.builtin.stat:
-    path: "{{ eck_map_mbtiles_path }}"
-    checksum_algorithm: sha256
-  register: eck_map_mbtiles_checksum
-  when: eck_map_mbtiles_sha256 | length > 0
-
-- name: Assert tiles.mbtiles checksum matches
-  ansible.builtin.assert:
-    that:
-      - eck_map_mbtiles_checksum.stat.checksum == eck_map_mbtiles_sha256 | lower
-    fail_msg: >-
-      tiles.mbtiles SHA256 mismatch: expected {{ eck_map_mbtiles_sha256 }},
-      got {{ eck_map_mbtiles_checksum.stat.checksum }}.
-  when: eck_map_mbtiles_sha256 | length > 0
+      {{ eck_map_mbtiles_path }} must exist, be world-readable, and its
+      directory world-readable+traversable (tileserver-gl runs as non-root);
+      if eck_map_mbtiles_sha256 is set, the checksum must match. Fix:
+      sudo chmod o+rx {{ eck_map_mbtiles_path | dirname }} &&
+      sudo chmod o+r {{ eck_map_mbtiles_path }}

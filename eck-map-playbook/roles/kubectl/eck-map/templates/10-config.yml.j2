@@ -1,0 +1,74 @@
+# {{ ansible_managed }}
+# TLS certificate + the two config files (nginx.conf, tileserver config.json).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tileserver-tls
+  namespace: {{ eck_map_namespace }}
+  labels:
+    app.kubernetes.io/part-of: eck-map
+spec:
+  secretName: tileserver-tls
+  duration: {{ eck_map_cert_duration }}
+  issuerRef:
+    name: {{ eck_map_cert_issuer_name }}
+    kind: ClusterIssuer
+  ipAddresses:
+    # Must be an IP address, not a dnsName: clients connect via the
+    # MetalLB IP, not a hostname (doc §4.3c).
+    - "{{ eck_map_tile_ip }}"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tileserver-nginx-config
+  namespace: {{ eck_map_namespace }}
+  labels:
+    app.kubernetes.io/part-of: eck-map
+data:
+  nginx.conf: |
+    events {}
+    http {
+      server {
+        listen 8443 ssl;
+        ssl_certificate     /etc/nginx-tls/tls.crt;
+        ssl_certificate_key /etc/nginx-tls/tls.key;
+        location / {
+          proxy_pass http://127.0.0.1:8080;
+        }
+      }
+    }
+---
+# tileserver-gl v5.6.0 only auto-detects its built-in style when the
+# mbtiles metadata "name" field contains "openmaptiles"; OpenFreeMap's is
+# "OpenFreeMap", so an explicit config.json is required (doc §2) — without
+# it tileserver-gl silently falls back to "Serving raw data only" and
+# /styles.json returns an empty array.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tileserver-config
+  namespace: {{ eck_map_namespace }}
+  labels:
+    app.kubernetes.io/part-of: eck-map
+data:
+  config.json: |
+    {
+      "options": {
+        "paths": {
+          "root": "/usr/src/app/node_modules/tileserver-gl-styles",
+          "fonts": "fonts",
+          "styles": "styles",
+          "mbtiles": "/data"
+        }
+      },
+      "styles": {
+        "basic-preview": {
+          "style": "basic-preview/style.json",
+          "tilejson": { "bounds": [-180, -85.05113, 180, 85.05113] }
+        }
+      },
+      "data": {
+        "v3": { "mbtiles": "{{ eck_map_mbtiles_path | basename }}" }
+      }
+    }

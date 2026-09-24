@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+# Applied first: the Service's LoadBalancer IP is needed for the
+# Certificate's SAN in 10-config.yml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ eck_map_namespace }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tileserver
+  namespace: {{ eck_map_namespace }}
+  labels:
+    app.kubernetes.io/part-of: eck-map
+{% if eck_map_tile_vip %}
+  annotations:
+    # MetalLB 0.13.9 (kubespray v2.31.0) pins the IP via this annotation.
+    metallb.universe.tf/loadBalancerIPs: "{{ eck_map_tile_vip }}"
+{% endif %}
+spec:
+  type: LoadBalancer
+  selector:
+    app: tileserver
+  ports:
+    - port: 443
+      targetPort: 8443

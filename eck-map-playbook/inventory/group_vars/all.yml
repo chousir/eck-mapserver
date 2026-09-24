@@ -1,50 +1,17 @@
 ---
-# Review these before every environment's first deploy. Anything not listed
-# here keeps its default from roles/kubectl/eck-map/defaults/main.yml.
+# Everything here is optional — defaults (roles/kubectl/eck-map/defaults/main.yml)
+# already match the standard environment. Uncomment only what differs.
 
-# REQUIRED — no default. MetalLB-assigned IP the Service will get.
-# Must be an IP address: the Certificate uses `ipAddresses`, not `dnsNames`
-# (doc §4.3c) because clients connect via this VIP, not a hostname.
+# Empty = MetalLB auto-assigns an IP; the playbook prints it at the end.
+# Paste it here afterwards to pin it (Kibana's map.tilemap.url depends on it),
+# or set it up front if Kibana's config is written before this playbook runs.
 eck_map_tile_vip: ""
 
-# Where tiles.mbtiles has already been placed on k8s-controller01 (you place
-# it yourself — this playbook never transfers the ~95GB file). Defaults to
-# ~/openfreemap/tiles.mbtiles under the SSH-connecting user's home dir;
-# uncomment to override.
-# eck_map_mbtiles_path: "{{ ansible_env.HOME }}/openfreemap/tiles.mbtiles"
-
-# Optional one-time integrity check (doc §1.3). Leave empty on routine
-# re-runs — verifying a ~95GB file reads the whole thing and is slow.
+# Optional one-time integrity check (doc §1.3) — reads the whole ~95GB file.
 # eck_map_mbtiles_sha256: "60a37d2324a27c18798570b9193534c1b88a2a564c10a808a03a419e8dd15ea1"
 
-# ≥1.2x the actual tiles.mbtiles size (doc §4.3).
-# eck_map_pv_storage_size: "150Gi"
-
-# Air-gapped internal registry the two images were pushed to. You
-# docker pull/tag/push these yourself — this role only references the
-# resulting names, it never builds or pushes anything.
-# eck_map_image_registry: "registry.internal:5000"
-# eck_map_tileserver_image_repository: "maptiler/tileserver-gl"
-# eck_map_tileserver_image_tag: "v5.6.0"
-# eck_map_nginx_image_repository: "nginx"
-# eck_map_nginx_image_tag: "1.27-alpine"
-
-# TLS: defaults to a SelfSigned Issuer the role creates itself —
-# CONNECTIVITY TESTING ONLY (doc §4.3c: browsers silently drop untrusted
-# subresources like map tiles, with no click-through warning). Before any
-# production run, set this false and point issuer_name/kind at your
-# internal CA ClusterIssuer.
-# eck_map_cert_manager_create_selfsigned_issuer: true
-# eck_map_cert_issuer_name: "your-internal-ca-clusterissuer"
-# eck_map_cert_issuer_kind: "ClusterIssuer"
-
-# Leave unset unless the SSH inventory alias and the k8s node's
-# kubernetes.io/hostname label value actually differ.
-# eck_map_k8s_node_hostname: "k8s-controller01"
-
-# Leave unset to let kubectl resolve PATH / KUBECONFIG env / ~/.kube/config
-# itself. If overriding eck_map_kubectl_kubeconfig, use an absolute path —
-# this is passed via argv (not a shell), so "~" will NOT be expanded.
-# eck_map_kubectl_bin: "kubectl"
-# eck_map_kubectl_context: ""
-# eck_map_kubectl_kubeconfig: ""
+# eck_map_mbtiles_path: "/var/lib/tileserver/tiles.mbtiles"
+# eck_map_cert_issuer_name: "ca-issuer"
+# eck_map_cert_duration: "8760h"
+# eck_map_image_registry: ""          # empty = pull via the Nexus containerd mirror
+# eck_map_k8s_node_hostname: "k8s-controller01"   # only if it differs from the inventory name

@@ -1,89 +1,40 @@
 ---
 - name: Wait for the tileserver rollout to finish
-  ansible.builtin.command:
-    argv: "{{ [eck_map_kubectl_bin] + eck_map_kubectl_base_args + ['-n', eck_map_namespace, 'rollout', 'status', 'deployment/' + eck_map_deployment_name, '--timeout=' + eck_map_rollout_status_timeout] }}"
+  ansible.builtin.command: kubectl -n {{ eck_map_namespace }} rollout status deployment/tileserver --timeout=300s
   changed_when: false
 
-- name: Get pod placement (must be Running on the node holding tiles.mbtiles)
-  ansible.builtin.command:
-    argv: "{{ [eck_map_kubectl_bin] + eck_map_kubectl_base_args + ['-n', eck_map_namespace, 'get', 'pods', '-l', 'app=' + eck_map_app_label_value, '-o', 'jsonpath={.items[0].spec.nodeName}'] }}"
-  register: eck_map_pod_node
-  changed_when: false
-
-- name: Assert the pod landed on the expected node
-  ansible.builtin.assert:
-    that:
-      - eck_map_pod_node.stdout == eck_map_k8s_node_hostname
-    fail_msg: >-
-      tileserver pod is on node '{{ eck_map_pod_node.stdout }}', expected
-      '{{ eck_map_k8s_node_hostname }}' (where tiles.mbtiles actually lives).
-
-- name: Fetch tileserver container logs (read-only)
-  ansible.builtin.command:
-    argv: "{{ [eck_map_kubectl_bin] + eck_map_kubectl_base_args + ['-n', eck_map_namespace, 'logs', '-l', 'app=' + eck_map_app_label_value, '-c', 'tileserver', '--tail=200'] }}"
-  register: eck_map_tileserver_logs
-  changed_when: false
-  failed_when: false
-
-- name: Warn if the ConfigMap isn't being honored (doc §2's known failure mode)
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: tileserver logs show it's serving raw data only — config.json
-      (the tileserver-config ConfigMap) is not taking effect. Check the
-      --config arg and the ConfigMap mount.
-  when: >-
-    eck_map_tileserver_logs.rc == 0 and
-    'Serving raw data only' in eck_map_tileserver_logs.stdout
-
-# Everything below only applies when the Service actually gets an external IP.
-- name: Get the Service's actual assigned LoadBalancer IP
-  ansible.builtin.command:
-    argv: "{{ [eck_map_kubectl_bin] + eck_map_kubectl_base_args + ['-n', eck_map_namespace, 'get', 'svc', eck_map_service_name, '-o', 'jsonpath={.status.loadBalancer.ingress[0].ip}'] }}"
-  register: eck_map_svc_ip
-  changed_when: false
-  until: eck_map_svc_ip.stdout | length > 0
-  retries: "{{ eck_map_lb_ip_retries }}"
-  delay: "{{ eck_map_lb_ip_delay }}"
-  when: eck_map_service_type == 'LoadBalancer'
-
-- name: Assert the Service's LoadBalancer IP matches eck_map_tile_vip
-  ansible.builtin.assert:
-    that:
-      - eck_map_svc_ip.stdout == eck_map_tile_vip
-    fail_msg: >-
-      Service {{ eck_map_service_name }} got LoadBalancer IP
-      '{{ eck_map_svc_ip.stdout }}' but eck_map_tile_vip is
-      '{{ eck_map_tile_vip }}'. TLS clients connecting to the actual assigned
-      IP will fail hostname verification, since the Certificate's
-      ipAddresses SAN only covers eck_map_tile_vip. Fix the MetalLB
-      pool/annotation, or update eck_map_tile_vip and re-run.
-  when: eck_map_service_type == 'LoadBalancer'
-
-- name: "Smoke check: HTTPS root responds 200"
+# Covers TLS (nginx sidecar), tileserver itself, and config.json (doc §2:
+# without it styles.json is empty). validate_certs: false only proves the
+# server works — browser trust is checked by hand (doc §6.5).
+- name: "Smoke check: https://<tile IP>/styles.json contains basic-preview"
   ansible.builtin.uri:
-    url: "https://{{ eck_map_tile_vip }}/"
-    validate_certs: false
-    status_code: 200
-  when: eck_map_service_type == 'LoadBalancer'
-  # validate_certs:false only proves the nginx sidecar is listening and the
-  # TLS handshake completes — it does NOT prove a browser will trust this
-  # cert. That's a manual check (doc §6.5: internal CA imported into the
-  # browser's trust store), especially with the self-signed default.
-
-- name: "Smoke check: /styles.json contains basic-preview"
-  ansible.builtin.uri:
-    url: "https://{{ eck_map_tile_vip }}/styles.json"
+    url: "https://{{ eck_map_tile_ip }}/styles.json"
     validate_certs: false
     return_content: true
-  register: eck_map_styles_check
-  when: eck_map_service_type == 'LoadBalancer'
+  register: eck_map_styles
+  until: eck_map_styles.status == 200 and 'basic-preview' in eck_map_styles.content
+  retries: 12
+  delay: 5
 
-- name: Assert styles.json is not the empty/raw-data fallback
-  ansible.builtin.assert:
-    that:
-      - "'basic-preview' in eck_map_styles_check.content"
-    fail_msg: >-
-      /styles.json does not contain 'basic-preview'. tileserver-gl likely
-      fell back to raw-data mode (doc §2) — check the tileserver-config
-      ConfigMap and the pod logs above.
-  when: eck_map_service_type == 'LoadBalancer'
+- name: Read the issued TLS Secret
+  ansible.builtin.command: kubectl -n {{ eck_map_namespace }} get secret tileserver-tls -o json
+  register: eck_map_tls_secret
+  changed_when: false
+
+- name: Copy ca.crt to the Ansible control node
+  ansible.builtin.copy:
+    content: "{{ (eck_map_tls_secret.stdout | from_json).data['ca.crt'] | b64decode }}"
+    dest: "{{ eck_map_ca_export_path }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: Next steps (Kibana config + browser trust)
+  ansible.builtin.debug:
+    msg:
+      - "Tile server: https://{{ eck_map_tile_ip }}/"
+      - "Add to Kibana (ECK Kibana CR spec.config, or eck-stack values eck-kibana.config):"
+      - "  map.includeElasticMapsService: false"
+      - "  map.tilemap.url: \"https://{{ eck_map_tile_ip }}/styles/basic-preview/{z}/{x}/{y}.png\""
+      - "Import {{ eck_map_ca_export_path }} into users' browser/OS trust store."
+      - "{{ '' if eck_map_tile_vip else 'IP was auto-assigned by MetalLB — set eck_map_tile_vip: \"' + eck_map_tile_ip + '\" in group_vars to pin it.' }}"
