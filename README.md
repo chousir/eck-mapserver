@@ -140,6 +140,52 @@ cert-manager 續簽後會更新 Secret，nginx sidecar 每 6 小時（`eck_map_n
   重建也會拿到同一個 IP（前提是這個 IP 仍在 MetalLB 的 pool 裡，且沒被其他 Service 使用）。
 - 如果希望在跑 playbook 之前就先把 Kibana 設定寫進 ECK，一開始就填入 `eck_map_tile_vip` 即可。
 
+## 打包：在連外機器上下載 image 與底圖
+
+在有外網的 Debian 13 (amd64) 機器上，於 repo 根目錄執行。下載的資料全部放在 `package/`
+（已加入 `.gitignore`，不會被 commit），之後整個目錄搬進 air-gap 環境即可。需要約 **96GB** 的磁碟空間。
+
+### 1. 拉取 image
+
+```bash
+mkdir -p package/images package/openfreemap
+
+docker pull --platform linux/amd64 maptiler/tileserver-gl:v5.6.0
+docker save maptiler/tileserver-gl:v5.6.0 -o package/images/tileserver-gl_v5.6.0_amd64.tar
+
+docker pull --platform linux/amd64 nginx:1.30-alpine
+docker save nginx:1.30-alpine -o package/images/nginx_1.30-alpine_amd64.tar
+
+(cd package/images && sha256sum *.tar > SHA256SUMS)
+```
+
+### 2. 下載底圖 `tiles.mbtiles`（OpenFreeMap 全球，約 95GB）
+
+```bash
+URL=https://btrfs.openfreemap.com/areas/planet/20260810_211301_pt/tiles.mbtiles
+until curl --http1.1 -fL -C - -o package/openfreemap/tiles.mbtiles "$URL"; do sleep 30; done
+
+echo "60a37d2324a27c18798570b9193534c1b88a2a564c10a808a03a419e8dd15ea1  tiles.mbtiles" > package/openfreemap/SHA256SUMS
+(cd package/openfreemap && sha256sum -c SHA256SUMS)     # 應顯示 tiles.mbtiles: OK
+```
+
+- **一定要照上面的寫法下載**：強制 HTTP/1.1、用 `-C -` 依磁碟大小續傳、重試交給外層 `until` 迴圈，
+  不要改用 curl 的 `--retry` 或 HTTP/2（實測曾發生續傳位置與磁碟不同步、覆寫掉已下載內容）。
+  中斷後重新執行同一段即可續傳；目標大小是 `101859651584` bytes（`stat -c%s package/openfreemap/tiles.mbtiles`）。
+- 版本 `20260810_211301_pt`（OSM 資料日期 2026-08-03）的 SHA256 是規劃書 §1.1 已驗證的值。想用更新版本時，
+  查詢最新版本目錄的方式見規劃書 §1.1，並改用該版本的 `SHA256SUMS`。
+
+### 3. 搬進 air-gap 環境後驗證
+
+`package/` 裡的兩個子目錄各自帶有 `SHA256SUMS`，搬完後分別驗證（`tiles.mbtiles` 會讀完整的 95GB）：
+
+```bash
+(cd package/images && sha256sum -c SHA256SUMS)
+(cd package/openfreemap && sha256sum -c SHA256SUMS)
+```
+
+`images/*.tar` 匯入 Nexus 的方式見下一節 §1；`tiles.mbtiles` 放到節點的位置見下一節 §2。
+
 ## Air-gap 前置作業（執行 playbook 前必須完成）
 
 playbook 不會搬運任何檔案或 image。第 2 項沒做完，preflight 會直接 fail 並印出原因；第 1 項請用下面的 `crictl pull` 自行確認。
@@ -153,8 +199,8 @@ registry mirror（`containerd_registries_mirrors`）指向它，所以節點可�
 - `maptiler/tileserver-gl:v5.6.0`
 - `nginx:1.30-alpine`
 
-只要確認這兩個 image 已經在 Nexus 裡（照平常放 image 進 Nexus 的方式處理；需要從外網打包的話，
-在 Debian 13 (amd64) 上 `docker pull` + `docker save`）。部署前在 `k8s-controller01` 上先試拉一次：
+只要確認這兩個 image 已經在 Nexus 裡（照平常放 image 進 Nexus 的方式處理；tar 檔的打包方式見上面
+「打包」一節）。部署前在 `k8s-controller01` 上先試拉一次：
 
 ```bash
 sudo crictl pull docker.io/maptiler/tileserver-gl:v5.6.0
@@ -168,7 +214,7 @@ sudo crictl pull docker.io/library/nginx:1.30-alpine
 
 ```bash
 sudo mkdir -p /var/lib/tileserver
-# 把 tiles.mbtiles 放進 /var/lib/tileserver/
+# 把打包好的 package/openfreemap/tiles.mbtiles 放進 /var/lib/tileserver/
 sudo chmod o+rx /var/lib/tileserver
 sudo chmod o+r  /var/lib/tileserver/tiles.mbtiles
 ```
@@ -206,7 +252,8 @@ playbook 依序執行：
 ```
 eck-map/
 ├── ECK離線地圖底圖規劃書.md          原始規劃文件（背景與驗證細節）
-└── eck-map-playbook/                所有指令都在這裡執行
+├── package/                         打包下載的 image tar 與 tiles.mbtiles（gitignore，見「打包」一節）
+└── eck-map-playbook/                所有 ansible 指令都在這裡執行
     ├── ansible.cfg
     ├── site.yml
     ├── inventory/
