@@ -13,3 +13,7 @@ eck_map_tile_vip: ""
 eck_map_mbtiles_sha256: ""
 eck_map_mbtiles_path: "/var/lib/tileserver/tiles.mbtiles"
 eck_map_pv_storage_size: 150Gi              # ≥1.2x the actual file size
+
+# ── Images ────────────────────────────────────────────────────────────────
+eck_map_tileserver_image: maptiler/tileserver-gl:v5.6.0
+eck_map_nginx_image: nginx:1.23.0-alpine

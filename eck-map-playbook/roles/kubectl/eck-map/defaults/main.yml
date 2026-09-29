@@ -6,10 +6,6 @@
 eck_map_namespace: gis
 eck_map_manifest_dir: /etc/k8s/eck-map      # rendered manifests on the target host
 
-# ── Images ────────────────────────────────────────────────────────────────
-eck_map_tileserver_image: maptiler/tileserver-gl:v5.6.0
-eck_map_nginx_image: nginx:1.23.0-alpine
-
 # ── TLS ───────────────────────────────────────────────────────────────────
 eck_map_cert_issuer_name: ca-issuer         # CA-type ClusterIssuer
 eck_map_cert_duration: 8760h                # cannot outlive the issuing CA

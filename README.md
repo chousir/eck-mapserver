@@ -207,7 +207,7 @@ sudo crictl pull docker.io/library/nginx:1.23.0-alpine
 ```
 
 兩個都成功，Pod 就不會卡在 `ImagePullBackOff`。如果 image 名稱不同（例如放在另一個前綴下），
-直接修改 `defaults/main.yml` 的 `eck_map_tileserver_image` / `eck_map_nginx_image`。
+直接修改 `inventory/group_vars/all.yml` 的 `eck_map_tileserver_image` / `eck_map_nginx_image`。
 
 ### 2. 把 `tiles.mbtiles` 放到 `k8s-controller01`
 
@@ -256,10 +256,10 @@ eck-map/
     ├── ansible.cfg
     ├── site.yml
     ├── inventory/
-    │   ├── hosts.yaml               目標主機（group: k8s_controller）
-    │   └── group_vars/all.yml       選填參數
+    │   ├── hosts.yaml               目標主機（group: gis）
+    │   └── group_vars/all.yml       各環境的值（IP、tiles 路徑、image）
     └── roles/kubectl/eck-map/
-        ├── defaults/main.yml        全部變數與預設值
+        ├── defaults/main.yml        其餘固定的預設值
         ├── tasks/
         │   ├── main.yml             preflight → deploy → verify
         │   ├── preflight.yml        tiles.mbtiles 檔案與權限
@@ -271,7 +271,7 @@ eck-map/
             └── 20-workload.yml.j2   PV/PVC + Deployment（tileserver + nginx-tls）
 ```
 
-## 全部變數（`roles/kubectl/eck-map/defaults/main.yml`）
+## 全部變數（`inventory/group_vars/all.yml` 與 `roles/kubectl/eck-map/defaults/main.yml`）
 
 | 變數 | 預設值 | 說明 |
 |---|---|---|

@@ -12,7 +12,7 @@
 #     transfers it.
 
 - name: Deploy ECK offline basemap (tileserver-gl + nginx TLS sidecar)
-  hosts: k8s_controller
+  hosts: gis
   gather_facts: false
   become: true
   roles:
