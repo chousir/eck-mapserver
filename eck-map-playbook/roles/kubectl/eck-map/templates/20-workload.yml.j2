@@ -22,7 +22,7 @@ spec:
         - matchExpressions:
             - key: kubernetes.io/hostname
               operator: In
-              values: ["{{ eck_map_k8s_node_hostname }}"]
+              values: ["{{ inventory_hostname }}"]
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -64,7 +64,7 @@ spec:
         - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
       nodeSelector:
-        kubernetes.io/hostname: {{ eck_map_k8s_node_hostname }}
+        kubernetes.io/hostname: {{ inventory_hostname }}
       containers:
         - name: tileserver
           image: {{ eck_map_tileserver_image }}

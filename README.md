@@ -19,7 +19,7 @@
 | MetalLB | v0.13.9 | kubespray v2.31.0 預設版本；固定 IP 用 `metallb.universe.tf/loadBalancerIPs` annotation |
 | Ansible | ansible 11.13.0（ansible-core 2.18） | 與 kubespray v2.31.0 的 `requirements.txt` 相同，可直接沿用 kubespray 的 venv；不需額外 collection |
 | tileserver-gl | v5.6.0 | `config.json` 的內建樣式路徑綁定此版本，**勿任意升級** |
-| nginx（TLS sidecar） | 1.30-alpine | |
+| nginx（TLS sidecar） | 1.23.0-alpine | |
 | OpenFreeMap mbtiles | `20260810_211301_pt` | ~95GB，SHA256 見規劃書 §1.1 |
 | 打包環境 | Debian 13 (amd64) | 用來 pull/save image 的連外機器 |
 
@@ -40,8 +40,9 @@
 
 ## 部署前必須修改的參數
 
-只有 `inventory/hosts`：`k8s-controller01` 的 `ansible_host=` / `ansible_user=`（SSH 位址或帳號跟主機名稱
-不同時才需要加）。其他都已經有符合本案環境的預設值。
+只有 `inventory/hosts.yaml`：`k8s-controller01` 的 `ansible_host`（目前是範例值 `192.168.1.10`，請改成實際的
+SSH 位址；帳號不是目前使用者時再加 `ansible_user`）。**inventory 名稱必須等於 k8s node name**
+（`kubectl get nodes` 看到的名稱），Pod 和 PV 會用它釘在這台節點上。其他都已經有符合本案環境的預設值。
 
 視情況才需要修改（`inventory/group_vars/all.yml`）：
 
@@ -50,8 +51,6 @@
 | `eck_map_tile_vip` | 預設留空，由 MetalLB 從 pool 自動分配 IP。想固定 IP、或想在跑 playbook 之前就先寫好 Kibana 設定時才要填（見下方「Service IP」） |
 | `eck_map_mbtiles_sha256` | 搬完檔案後想驗證一次時才填（會讀完整的 95GB） |
 | `eck_map_mbtiles_path` | 檔案沒放在預設的 `/var/lib/tileserver/tiles.mbtiles` 時 |
-| `eck_map_image_registry` | 預設留空（用原始 image 名稱，透過 Nexus mirror 拉取）。只有 image 放在不同前綴下時才要填 |
-| `eck_map_k8s_node_hostname` | inventory 名稱跟 k8s node name（`kubernetes.io/hostname`）不同時 |
 
 ## ECK 部署時要加入的 Kibana 設定
 
@@ -126,7 +125,7 @@ spec:
 cert-manager 的 CA，會比較好管理。
 
 **憑證續簽**：`eck_map_cert_duration` 預設是 `8760h`，可以調長，但不能超過 CA 本身的效期。
-cert-manager 續簽後會更新 Secret，nginx sidecar 每 6 小時（`eck_map_nginx_reload_interval_seconds`）
+cert-manager 續簽後會更新 Secret，nginx sidecar 每 6 小時
 會自動 `nginx -s reload` 一次，所以不需要手動重啟。
 
 ## Service IP（自動分配或固定）
@@ -153,8 +152,8 @@ mkdir -p package/images package/openfreemap
 docker pull --platform linux/amd64 maptiler/tileserver-gl:v5.6.0
 docker save maptiler/tileserver-gl:v5.6.0 -o package/images/tileserver-gl_v5.6.0_amd64.tar
 
-docker pull --platform linux/amd64 nginx:1.30-alpine
-docker save nginx:1.30-alpine -o package/images/nginx_1.30-alpine_amd64.tar
+docker pull --platform linux/amd64 nginx:1.23.0-alpine
+docker save nginx:1.23.0-alpine -o package/images/nginx_1.23.0-alpine_amd64.tar
 
 (cd package/images && sha256sum *.tar > SHA256SUMS)
 ```
@@ -194,21 +193,21 @@ playbook 不會搬運任何檔案或 image。第 2 項沒做完，preflight 會�
 
 本案的內部 Nexus docker registry 前面有 nginx 反向代理，而且 kubespray 已把 containerd 的
 registry mirror（`containerd_registries_mirrors`）指向它，所以節點可以直接用**原始 image 名稱**拉取，
-不需要重新 tag，也不需要設定 `eck_map_image_registry`：
+不需要重新 tag：
 
 - `maptiler/tileserver-gl:v5.6.0`
-- `nginx:1.30-alpine`
+- `nginx:1.23.0-alpine`
 
 只要確認這兩個 image 已經在 Nexus 裡（照平常放 image 進 Nexus 的方式處理；tar 檔的打包方式見上面
 「打包」一節）。部署前在 `k8s-controller01` 上先試拉一次：
 
 ```bash
 sudo crictl pull docker.io/maptiler/tileserver-gl:v5.6.0
-sudo crictl pull docker.io/library/nginx:1.30-alpine
+sudo crictl pull docker.io/library/nginx:1.23.0-alpine
 ```
 
-兩個都成功，Pod 就不會卡在 `ImagePullBackOff`。如果 image 是放在另一個前綴下（例如
-`registry.internal:5000/nginx:1.30-alpine`），再把 `eck_map_image_registry` 設成該前綴即可。
+兩個都成功，Pod 就不會卡在 `ImagePullBackOff`。如果 image 名稱不同（例如放在另一個前綴下），
+直接修改 `defaults/main.yml` 的 `eck_map_tileserver_image` / `eck_map_nginx_image`。
 
 ### 2. 把 `tiles.mbtiles` 放到 `k8s-controller01`
 
@@ -257,7 +256,7 @@ eck-map/
     ├── ansible.cfg
     ├── site.yml
     ├── inventory/
-    │   ├── hosts                    目標主機（group: k8s_controller）
+    │   ├── hosts.yaml               目標主機（group: k8s_controller）
     │   └── group_vars/all.yml       選填參數
     └── roles/kubectl/eck-map/
         ├── defaults/main.yml        全部變數與預設值
@@ -281,12 +280,12 @@ eck-map/
 | `eck_map_mbtiles_path` | `/var/lib/tileserver/tiles.mbtiles` | PV 的 `local.path`（取目錄）與 config.json 的檔名都由此推導 |
 | `eck_map_mbtiles_sha256` | `""` | 選填，設定後才會做 checksum |
 | `eck_map_pv_storage_size` | `150Gi` | 建議 ≥ 實際檔案大小的 1.2 倍 |
-| `eck_map_image_registry` | `""` | 空值代表用原始 image 名稱；有值時會加在 image 名稱前面 |
+| `eck_map_tileserver_image` | `maptiler/tileserver-gl:v5.6.0` | 原始 image 名稱，透過 Nexus mirror 拉取 |
+| `eck_map_nginx_image` | `nginx:1.23.0-alpine` | 同上 |
 | `eck_map_cert_issuer_name` | `ca-issuer` | CA 型 ClusterIssuer |
 | `eck_map_cert_duration` | `8760h` | 憑證效期，不能超過 CA 的效期 |
 | `eck_map_ca_export_path` | `eck-map-playbook/tileserver-ca.crt` | 在控制端匯出的 CA |
 | `eck_map_tile_vip` | `""` | 空值代表由 MetalLB 自動分配；有值代表用 annotation 固定 |
-| `eck_map_k8s_node_hostname` | `{{ inventory_hostname }}` | PV nodeAffinity 與 Deployment nodeSelector 使用 |
 | `eck_map_tileserver_resources` | requests `1Gi`/`500m`、limits `2Gi` | 依節點資源調整 |
 
 其他固定值（資源名稱、port 443/8443/8080、control-plane toleration、nginx 每 6 小時 reload、各種等待

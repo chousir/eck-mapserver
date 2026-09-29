@@ -6,7 +6,7 @@
 #   - kubespray v2.31.0 cluster: kubectl + /root/.kube/config on the control
 #     plane (hence become: true), MetalLB, cert-manager with the `ca-issuer`
 #     CA ClusterIssuer.
-#   - tileserver-gl v5.6.0 and nginx 1.30-alpine pullable via the Nexus
+#   - tileserver-gl v5.6.0 and nginx 1.23.0-alpine pullable via the Nexus
 #     containerd mirror — this role never builds, loads, tags, or pushes images.
 #   - tiles.mbtiles already placed at eck_map_mbtiles_path — this role never
 #     transfers it.

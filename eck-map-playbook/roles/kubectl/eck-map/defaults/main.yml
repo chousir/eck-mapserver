@@ -6,18 +6,9 @@
 eck_map_namespace: gis
 eck_map_manifest_dir: /etc/k8s/eck-map      # rendered manifests on the target host
 
-# ── tiles.mbtiles (placed by the user; this role never transfers it) ─────
-eck_map_mbtiles_path: /var/lib/tileserver/tiles.mbtiles
-eck_map_mbtiles_sha256: ""                  # set once to verify the ~95GB file (slow)
-eck_map_pv_storage_size: 150Gi              # ≥1.2x the actual file size
-
 # ── Images ────────────────────────────────────────────────────────────────
-# Empty = original names, pulled through containerd's registry mirror
-# (Nexus). Set only if images live under another prefix.
-eck_map_image_registry: ""
-eck_map_image_prefix: "{{ eck_map_image_registry ~ '/' if eck_map_image_registry else '' }}"
-eck_map_tileserver_image: "{{ eck_map_image_prefix }}maptiler/tileserver-gl:v5.6.0"
-eck_map_nginx_image: "{{ eck_map_image_prefix }}nginx:1.30-alpine"
+eck_map_tileserver_image: maptiler/tileserver-gl:v5.6.0
+eck_map_nginx_image: nginx:1.23.0-alpine
 
 # ── TLS ───────────────────────────────────────────────────────────────────
 eck_map_cert_issuer_name: ca-issuer         # CA-type ClusterIssuer
@@ -25,13 +16,9 @@ eck_map_cert_duration: 8760h                # cannot outlive the issuing CA
 # ca.crt is copied here on the Ansible control node after deploy.
 eck_map_ca_export_path: "{{ playbook_dir }}/tileserver-ca.crt"
 
-# ── Service IP ────────────────────────────────────────────────────────────
-# Empty = MetalLB auto-assigns; set to pin a specific IP from the pool.
-eck_map_tile_vip: ""
-
 # ── Pod ───────────────────────────────────────────────────────────────────
-# kubernetes.io/hostname of the node holding tiles.mbtiles.
-eck_map_k8s_node_hostname: "{{ inventory_hostname }}"
+# The Pod and PV are pinned to the inventory host (inventory_hostname must
+# equal its k8s node name), i.e. the node holding tiles.mbtiles.
 eck_map_tileserver_resources:
   requests: { memory: 1Gi, cpu: 500m }
   limits: { memory: 2Gi }
