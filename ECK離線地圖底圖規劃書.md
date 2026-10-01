@@ -265,7 +265,7 @@ data:
 
 下面範例的 `SelfSigned` Issuer **只能拿來測連通性,不能當正式部署的預設值**——`SelfSigned` 簽出來的是「自己簽自己」的單張 leaf 憑證,不是一條可重複使用的 CA:瀏覽器/Kibana 載入底圖圖磚是 subresource 請求,對不受信任的憑證**不會跳出可點擊「繼續前往」的警告,會直接靜默失敗**——效果跟沒修 mixed content 之前一樣,底圖一樣整片消失、看起來像沒改到。而且 §6.5 加的「內部 CA 已匯入使用者瀏覽器信任庫」這項檢查,`SelfSigned` 這條路徑本來就沒有 CA 可以匯入,永遠過不了。真的要用 `SelfSigned` 過渡,務必先在 §5.2(本機重現)確認瀏覽器信任問題怎麼處理,再套用到正式環境。
 
-**`<tile-VIP>` 是 MetalLB 分配的 IP,不是網域名稱**——憑證要用 `ipAddresses`,不是 `dnsNames`(用 `dnsNames` 簽的憑證,瀏覽器直接用 IP 連線時會 hostname 驗證失敗,`curl -k` 因為跳過驗證所以測不出這個差異,§6.1/§6.2 的 `-k` 不能拿來確認這件事)。§4.5 的 `map.tilemap.url` 與這裡的 `ipAddresses` 必須是同一個值。
+**`<tile-IP>` 是 MetalLB 分配的 IP,不是網域名稱**——憑證要用 `ipAddresses`,不是 `dnsNames`(用 `dnsNames` 簽的憑證,瀏覽器直接用 IP 連線時會 hostname 驗證失敗,`curl -k` 因為跳過驗證所以測不出這個差異,§6.1/§6.2 的 `-k` 不能拿來確認這件事)。§4.5 的 `map.tilemap.url` 與這裡的 `ipAddresses` 必須是同一個值。
 
 `tileserver-tls.yaml`(下面用 `SelfSigned` 只是示範欄位長相,**實際部署把 `issuerRef` 換成內部 CA issuer**):
 ```yaml
@@ -288,7 +288,7 @@ spec:
     name: tileserver-selfsigned  # ← 換成內部 CA ClusterIssuer 的名稱
     kind: Issuer                 # ← 若換成 ClusterIssuer,這裡也要改成 kind: ClusterIssuer
   ipAddresses:
-    - "<tile-VIP>"     # 換成實際 tile-VIP,必須跟 §4.5 map.tilemap.url 裡的值一致
+    - "<tile-IP>"     # 換成實際 tile IP,必須跟 §4.5 map.tilemap.url 裡的值一致
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -427,7 +427,7 @@ kubectl -n gis logs -l app=tileserver -c tileserver | grep -i "warn\|error"   # 
 `eck-stack-values.yaml` 的 `eck-kibana.config`:
 ```yaml
   config:
-    map.tilemap.url: "https://<tile-VIP>/styles/basic-preview/{z}/{x}/{y}.png"
+    map.tilemap.url: "https://<tile-IP>/styles/basic-preview/{z}/{x}/{y}.png"
     map.tilemap.options.minZoom: 0
     map.tilemap.options.maxZoom: 18                  # tiles.mbtiles 的 maxzoom=14(§1.3 用 sqlite3 查證),但 tileserver-gl 會對超過的縮放做 over-zoom(拿 z14 向量圖磚放大渲染,已實測 z16 正常出圖);這裡是「使用者在 Kibana 能縮多近」的上限,不是資料上限,設 14 會讓使用者卡在街廓尺度,画 geofence 多邊形時像是地圖壞了
     map.tilemap.options.attribution: >-
@@ -439,9 +439,30 @@ kubectl -n gis logs -l app=tileserver -c tileserver | grep -i "warn\|error"   # 
 
 > `map.tilemap.options.attribution` 是 ODbL 授權要求的標示義務(§1.1),不是裝飾用選項。
 
+**`<tile-IP>` 怎麼填**:取 tileserver Service 的 MetalLB IP(playbook 最後也會印出)。
+
+```bash
+kubectl -n gis get svc tileserver -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+```
+
+以取得 `192.168.1.100` 為例,填完是:
+
+```yaml
+    map.tilemap.url: "https://192.168.1.100/styles/basic-preview/{z}/{x}/{y}.png"
+```
+
+- **`<tile-IP>` 連角括號一起換掉**。
+- **`{z}/{x}/{y}` 原樣保留,不要改**:這是縮放層級與圖磚座標的佔位符,Kibana 載入圖磚時會自己代入數字。
+- **不用加 port**:Service 對外是 443(HTTPS 預設 port),不要寫 `:443`。
+- **一定要用 IP,不能換成主機名稱**:憑證只簽了這個 IP(§4.3c 的 `ipAddresses`),改用主機名稱,瀏覽器會判定名稱不符,底圖整片空白。
+
 ```bash
 helm upgrade prod elastic/eck-stack -n elastic-stack --version 0.19.1 -f eck-stack-values.yaml
 ```
+
+- 用 `-f eck-stack-values.yaml`,不要用 `--reuse-values`(新增欄位可能沒被合併進去)。
+- Kibana 設定一變,ECK 會**滾動重啟** Kibana Pod(3 個副本逐個換,期間仍有服務)。重啟完成後 `map.tilemap.url` 才生效。
+- 升級後,要看地圖的瀏覽器還要先**匯入內部 CA**(§4.3c / README「TLS 與瀏覽器信任」),匯入後**重開瀏覽器**,再依 §6.3 驗證。
 
 ---
 
@@ -495,7 +516,7 @@ docker compose down -v
 
 §4.3c 的 nginx sidecar、憑證、瀏覽器信任鏈完全沒有實跑過——air-gapped 正式環境是最不該第一次跑這段的地方。建議先在本機用同一份 `nginx.conf` 過一遍:
 
-1. 本機產生一張自簽憑證(`openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt -days 30 -addext "subjectAltName=IP:127.0.0.1"`——注意用 `subjectAltName=IP:...`,不是 CN/DNS,呼應 §4.3c「`<tile-VIP>` 是 IP,憑證要用 ipAddresses」的重點)。
+1. 本機產生一張自簽憑證(`openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt -days 30 -addext "subjectAltName=IP:127.0.0.1"`——注意用 `subjectAltName=IP:...`,不是 CN/DNS,呼應 §4.3c「`<tile-IP>` 是 IP,憑證要用 ipAddresses」的重點)。
 2. 額外起一個 `nginx:1.30-alpine` 容器,掛 §4.3c 那份 `nginx.conf`(把 `proxy_pass` 指到本機 compose 的 `tileserver:8080`)+ 上面產生的 `tls.crt`/`tls.key`,對外開 8443。
 3. 把本機 Kibana 設定的 `map.tilemap.url` 暫時改成 `https://localhost:8443/styles/basic-preview/{z}/{x}/{y}.png`,重啟 Kibana。
 4. 瀏覽器開 Kibana Maps,確認底圖圖磚正常渲染(跟 §7.5 的截圖比對)。若瀏覽器擋憑證不信任,這裡先解掉信任問題(匯入這張測試憑證,或改用內部 CA 簽的憑證),而不是等到正式環境才發現。
@@ -533,6 +554,13 @@ curl -s --cacert internal-ca.crt -o /tmp/taipei.png -w "台北市區 z10 http:%{
 ```
 
 ### 6.3 Kibana Maps 顯示驗證
+
+**先在要看地圖的那台電腦的瀏覽器,直接開這兩個網址**,確認圖磚 URL 本身是通的(Kibana 載入圖磚遇到憑證不受信任時**沒有警告畫面,只會靜默失敗**,在這裡先確認可以省掉很多猜測):
+
+- `https://<tile-IP>/styles.json`:應看到 JSON,內含 `basic-preview`。
+- `https://<tile-IP>/styles/basic-preview/0/0/0.png`:應看到一張世界地圖的小圖。
+
+這兩個網址出現憑證警告,代表這台電腦的瀏覽器還沒信任內部 CA(§4.3c),先處理這個,再往下看 Kibana。
 
 - Kibana → Maps → Add layer → **Configured Tile Map Service**(讀 `map.tilemap.url`,不是預設底圖,需手動加圖層)→ 確認底圖有渲染(非空白/非 404)。
 - 切換到不同大洲/縮放等級,確認全球覆蓋(非僅單一區域)。
@@ -611,8 +639,9 @@ Kibana 內操作:Maps 建圖層 → 工具列繪製多邊形/矩形 → 自動�
 - [ ] `tiles.mbtiles` SHA256 與 §1.1 官方值一致。
 - [ ] tileserver pod 的 log **沒有** `not in "openmaptiles" format` 警告(§2,ConfigMap 掛好就不會出現)。
 - [ ] tileserver pod Running 在 §4.2 放檔案的那台(`kubectl -n gis get pods -o wide`)。
-- [ ] `https://<tile-VIP>/` 回 200,`/styles.json` 非空陣列(§4.3c 的 TLS sidecar 有正常工作)。
-- [ ] 瀏覽器對 `https://<tile-VIP>/...` 的憑證受信任(內部 CA 已匯入使用者瀏覽器信任庫,或憑證鏈完整)——不受信任的話 Kibana Maps 一樣載不出底圖。
+- [ ] `https://<tile-IP>/` 回 200,`/styles.json` 非空陣列(§4.3c 的 TLS sidecar 有正常工作)。
+- [ ] 瀏覽器對 `https://<tile-IP>/...` 的憑證受信任(內部 CA 已匯入使用者瀏覽器信任庫,或憑證鏈完整)——不受信任的話 Kibana Maps 一樣載不出底圖。
+- [ ] 在要看地圖的電腦用瀏覽器直接開 `https://<tile-IP>/styles.json` 與 `https://<tile-IP>/styles/basic-preview/0/0/0.png`,沒有憑證警告、能正常顯示(§6.3)。
 - [ ] Kibana Maps 加 **Configured Tile Map Service** 圖層後底圖正常顯示,任意大洲皆有圖資(非僅局部區域,且非純色空白 tile)。
 - [ ] Kibana Maps 能同時疊「底圖 + ES 資料圖層(Documents / Heat map)」,逐層順序與透明度可調,整張 Map 可嵌入 Dashboard(§7)。
 - [ ] `geo.location` 已宣告 `geo_point`(主文件 §17.2),Geofencing 查詢回傳預期筆數。
